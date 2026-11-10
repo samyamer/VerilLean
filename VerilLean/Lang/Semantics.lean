@@ -180,6 +180,10 @@ abbrev NW := State      -- new wire values
 abbrev IFW := State     -- inputs + flops + wires
 abbrev IFF := IFW × Flops
 
+/--
+func may have missing inputs and should run anyways.
+Occurs when there is an input to the submoduke driven from one of its outpts
+-/
 structure MTrs where
   inputVids  : List VId
   inputDecls : Decls
@@ -332,6 +336,11 @@ structure ModuleCtx where
   funcs  : Funcs
   consts : Consts
   deferUndriven : Bool := true
+  /--
+  set by buildMtrs for when inputs are undriven and
+  need the module to run to resolve (false comb loop)
+  -/
+  partialInputs : Bool := false
   localNames : List VId := []
   hidden : State := State.empty
   widthElaboratedModule: Option module_decl := none -- the module after widths are elaborated
@@ -1960,14 +1969,18 @@ private def trsVModuleInputArg (ctx : ModuleCtx) (cpos : HPath)
     (ifw : IFW) (nw : NW) (mtrs : MTrs) (npcs : named_port_conns) (pid : VId) :
       trsOk (Option Value) := do
   let value? ← match namedPortConnFor npcs pid with
-    | some (.ident parentVid) => do
-        let value ← wfind ctx ifw nw parentVid
-        pure (some value)
+   | some (.ident parentVid) =>
+        match wfind ctx ifw nw parentVid with
+        | .ok v => pure (some v)
+        | .error .undriven => if ctx.deferUndriven then pure none else .error .undriven
+        | .error err => .error err
     | some (.expr _ e) => do -- resizing e as an assignment
         let inputDecl ← liftOption (mtrs.inputDecls.get? pid) .undeclared
         let newex ← widthAssignLike ctx (valWidth inputDecl) e
-        let value ← evalExpr ctx cpos ifw nw newex
-        pure (some value)
+        match evalExpr ctx cpos ifw nw newex with
+        | .ok v => pure (some v)
+        | .error .undriven => if ctx.deferUndriven then pure none else .error .undriven
+        | .error err => .error err
     | some (.open _) | none => pure none
     | some .wildcard => .error .fatal
   match value? with
@@ -1990,15 +2003,17 @@ private def trsVModuleOutput (ctx : ModuleCtx) (cpos : HPath)
     | some (.open _) | none => pure none
     | some .wildcard => .error .fatal
   match target with
-  | none => pure nw
-  | some lv => do
-      let ov ← liftOption (newWires.get? ovid) .undriven
-      let lv_resz ← widthLvalueAssignLike ctx lv --sizing the lhs
-      let p ← lvposfind ctx cpos ifw nw lv_resz
-      let dv ← declValue ctx.decls p
-      let dsz ← expectBits dv
-      let osz ← expectBits ov
-      pure (setStateValue ctx ifw nw nw p (HMap.bits (SZ.castD dsz osz)))
+    | none => pure nw
+    | some lv => do
+      match newWires.get? ovid with
+        | none => if ctx.deferUndriven then pure nw else .error .undriven
+        | some ov =>
+          let lv_resz ← widthLvalueAssignLike ctx lv --sizing the lhs
+          let p ← lvposfind ctx cpos ifw nw lv_resz
+          let dv ← declValue ctx.decls p
+          let dsz ← expectBits dv
+          let osz ← expectBits ov
+          pure (setStateValue ctx ifw nw nw p (HMap.bits (SZ.castD dsz osz)))
 
 private def trsVModuleOutputs (ctx : ModuleCtx) (cpos : HPath)
     (ifw : IFW) (newWires : NW) (npcs : named_port_conns) :
@@ -2117,7 +2132,8 @@ def trsM_iff_fix (ctx : ModuleCtx) (mtrss : MTrss) (cpos : HPath)
   | fuel + 1, iff_ => do
       let iff' ← trsVModuleDecl_IFF ctx mtrss cpos m iff_
       if iff'.1 == iff_.1 then
-        trsVModuleDecl_IFF { ctx with deferUndriven := false } mtrss cpos m iff_
+        if ctx.partialInputs then pure iff'
+        else trsVModuleDecl_IFF { ctx with deferUndriven := false } mtrss cpos m iff_
       else trsM_iff_fix ctx mtrss cpos m fuel (iff'.1, iff_.2)
 
 -- Build the final MTrs for a module, requiring convergence within five passes.
