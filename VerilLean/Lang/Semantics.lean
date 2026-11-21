@@ -2133,10 +2133,10 @@ def trsM_iff_fix (ctx : ModuleCtx) (mtrss : MTrss) (cpos : HPath)
         else trsVModuleDecl_IFF { ctx with deferUndriven := false } mtrss cpos m iff_
       else trsM_iff_fix ctx mtrss cpos m fuel (iff'.1, iff_.2)
 
--- Build the final MTrs for a module, requiring convergence within five passes.
+-- Build the final MTrs for a module, requiring convergence within six passes.
 def trsM_IFF (ctx : ModuleCtx) (mtrss : MTrss) (cpos : HPath)
     (m : module_decl) : IFF → trsOk IFF :=
-  trsM_iff_fix ctx mtrss cpos m 5
+  trsM_iff_fix ctx mtrss cpos m 6
 
 -- ## trsNext / trsT — compute next state and extract output
 
